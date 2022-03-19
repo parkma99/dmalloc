@@ -2,6 +2,9 @@
 #include "dmalloc.hh"
 #include <cassert>
 #include <cstring>
+#include <climits>
+
+dmalloc_stats global_stats;
 
 /**
  * dmalloc(sz,file,line)
@@ -17,7 +20,34 @@
 void* dmalloc(size_t sz, const char* file, long line) {
     (void) file, (void) line;   // avoid uninitialized variable warnings
     // Your code here.
-    return base_malloc(sz);
+    size_t nsz = sz+3*sizeof(size_t);
+    if (nsz<sz){
+        global_stats.nfail += 1;
+        global_stats.fail_size += sz;
+        return nullptr;
+    }
+    size_t* malloc_ptr = (size_t*)base_malloc(nsz);
+
+    if (malloc_ptr != nullptr){
+        global_stats.ntotal += 1;
+        global_stats.total_size += sz;
+        global_stats.nactive += 1;
+        global_stats.active_size += sz;
+        *malloc_ptr = (uintptr_t)malloc_ptr;
+        *(malloc_ptr + 1) = sz;
+        void * ptr = (void*)(malloc_ptr + 2);
+        if (global_stats.heap_max == 0 || (uintptr_t)ptr + sz >= global_stats.heap_max){
+            global_stats.heap_max = (uintptr_t)ptr + sz ;
+        }
+        if (global_stats.heap_min == 0 || (uintptr_t)ptr <= global_stats.heap_min){
+            global_stats.heap_min = (uintptr_t)ptr;
+        }
+        return ptr;
+    }else{
+        global_stats.nfail += 1;
+        global_stats.fail_size += sz;
+        return nullptr;
+    }
 }
 
 /**
@@ -32,7 +62,27 @@ void* dmalloc(size_t sz, const char* file, long line) {
 void dfree(void* ptr, const char* file, long line) {
     (void) file, (void) line;   // avoid uninitialized variable warnings
     // Your code here.
-    base_free(ptr);
+    if (ptr!=nullptr){
+        if ((uintptr_t)ptr > global_stats.heap_max || (uintptr_t)ptr < global_stats.heap_min){
+            fprintf(stderr,"MEMORY BUG: %s:%ld: invalid free of pointer %p, not in heap\n",file,line,ptr);
+            return;
+        }
+        void* mptr = (void*)(((uintptr_t)ptr/sizeof(size_t))*(sizeof(size_t)));
+        size_t* malloc_ptr = (size_t*)mptr - 2;
+        if ((uintptr_t)malloc_ptr != *malloc_ptr){
+            fprintf(stderr,"MEMORY BUG: %s:%ld: invalid free of pointer %p, not allocated\n",file,line,ptr);
+            return;
+        }
+        size_t sz = *(malloc_ptr + 1);
+        if (sz == 0){
+            fprintf(stderr,"MEMORY BUG: %s:%ld: invalid free of pointer %p, double free\n",file,line,ptr);
+            return;
+        }
+        global_stats.nactive -= 1;
+        global_stats.active_size -= sz;
+        *(malloc_ptr + 1) = 0;
+        base_free(malloc_ptr);
+    }
 }
 
 /**
@@ -50,6 +100,10 @@ void dfree(void* ptr, const char* file, long line) {
  */
 void* dcalloc(size_t nmemb, size_t sz, const char* file, long line) {
     // Your code here (to fix test014).
+    if (nmemb >= UINT_MAX/sz){
+        global_stats.nfail += 1;
+        return nullptr;
+    }
     void* ptr = dmalloc(nmemb * sz, file, line);
     if (ptr) {
         memset(ptr, 0, nmemb * sz);
@@ -67,6 +121,7 @@ void get_statistics(dmalloc_stats* stats) {
     // Stub: set all statistics to enormous numbers
     memset(stats, 255, sizeof(dmalloc_stats));
     // Your code here.
+    memcpy(stats, &global_stats, sizeof(dmalloc_stats));
 }
 
 /**
