@@ -57,6 +57,15 @@ struct dmalloc_stats {
     uintptr_t heap_max;                 // largest allocated addr
 };
 
+struct dmalloc_leak_value{
+    bool active;
+    long line;
+    uintptr_t ptr;
+    size_t size;
+    char* file;
+};
+
+
 /**
  * get_statistics(stats)
  *      fill a dmalloc_stats pointer with the current memory statistics

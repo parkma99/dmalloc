@@ -3,9 +3,10 @@
 #include <cassert>
 #include <cstring>
 #include <climits>
+#include <unordered_map>
 
 dmalloc_stats global_stats;
-
+static std::unordered_map<uintptr_t,dmalloc_leak_value> leakMap;
 /**
  * dmalloc(sz,file,line)
  *      malloc() wrapper. Dynamically allocate the requested amount `sz` of memory and 
@@ -20,7 +21,7 @@ dmalloc_stats global_stats;
 void* dmalloc(size_t sz, const char* file, long line) {
     (void) file, (void) line;   // avoid uninitialized variable warnings
     // Your code here.
-    size_t nsz = sz+3*sizeof(size_t);
+    size_t nsz = sz + 1 + 2 * sizeof(size_t);
     if (nsz<sz){
         global_stats.nfail += 1;
         global_stats.fail_size += sz;
@@ -35,14 +36,23 @@ void* dmalloc(size_t sz, const char* file, long line) {
         global_stats.active_size += sz;
         *malloc_ptr = (uintptr_t)malloc_ptr;
         *(malloc_ptr + 1) = sz;
-        void * ptr = (void*)(malloc_ptr + 2);
+        char * ptr = (char*)(malloc_ptr + 2);
         if (global_stats.heap_max == 0 || (uintptr_t)ptr + sz >= global_stats.heap_max){
             global_stats.heap_max = (uintptr_t)ptr + sz ;
         }
         if (global_stats.heap_min == 0 || (uintptr_t)ptr <= global_stats.heap_min){
             global_stats.heap_min = (uintptr_t)ptr;
         }
-        return ptr;
+        dmalloc_leak_value value;
+        value.active = true;
+        value.line = line;
+        value.ptr = (uintptr_t)ptr;
+        value.size = sz;
+        value.file = (char*)malloc(strlen(file)*sizeof(char));
+        memcpy(value.file,file, strlen(file)+1);
+        leakMap.insert(std::make_pair<uintptr_t,dmalloc_leak_value>((uintptr_t)ptr,std::move(value)));
+        *(ptr+sz) = '*';
+        return (void*)ptr;
     }else{
         global_stats.nfail += 1;
         global_stats.fail_size += sz;
@@ -78,8 +88,17 @@ void dfree(void* ptr, const char* file, long line) {
             fprintf(stderr,"MEMORY BUG: %s:%ld: invalid free of pointer %p, double free\n",file,line,ptr);
             return;
         }
+        char* checkBounder = (char*)ptr+sz;
+        if (*checkBounder!='*'){
+            fprintf(stderr,"MEMORY BUG: %s:%ld: detected wild write during free of pointer %p\n",file,line,ptr);
+            abort();
+        }
         global_stats.nactive -= 1;
         global_stats.active_size -= sz;
+        std::unordered_map<uintptr_t,dmalloc_leak_value>::const_iterator got = leakMap.find ((uintptr_t)ptr);
+        if (got != leakMap.end()){
+            leakMap.erase(got);
+        }
         *(malloc_ptr + 1) = 0;
         base_free(malloc_ptr);
     }
@@ -145,4 +164,9 @@ void print_statistics() {
  */
 void print_leak_report() {
     // Your code here.
+    for ( const auto& [key, value] : leakMap){
+        if (value.active){
+            fprintf(stdout,"LEAK CHECK: %s:%ld: allocated object %#lx with size %ld\n",value.file,value.line,value.ptr,value.size);
+        }
+    }
 }
