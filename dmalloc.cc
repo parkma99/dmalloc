@@ -80,6 +80,14 @@ void dfree(void* ptr, const char* file, long line) {
         void* mptr = (void*)(((uintptr_t)ptr/sizeof(size_t))*(sizeof(size_t)));
         size_t* malloc_ptr = (size_t*)mptr - 2;
         if ((uintptr_t)malloc_ptr != *malloc_ptr){
+            for ( const auto& [key, value] : leakMap){
+                size_t csz = value.size;
+                if ((uintptr_t)ptr < key + csz && (uintptr_t)ptr > key){
+                    fprintf(stderr,"MEMORY BUG: %s:%ld: invalid free of pointer %p, not allocated\n%s:%ld: %p is %ld bytes inside a %ld byte region allocated here\n",
+                            file,line,ptr,value.file,value.line,ptr,(uintptr_t)ptr-key,value.size);
+                    return;
+                }
+            }
             fprintf(stderr,"MEMORY BUG: %s:%ld: invalid free of pointer %p, not allocated\n",file,line,ptr);
             return;
         }
@@ -98,6 +106,9 @@ void dfree(void* ptr, const char* file, long line) {
         std::unordered_map<uintptr_t,dmalloc_leak_value>::const_iterator got = leakMap.find ((uintptr_t)ptr);
         if (got != leakMap.end()){
             leakMap.erase(got);
+        }else{
+            fprintf(stderr,"MEMORY BUG: %s:%ld: invalid free of pointer %p, double free\n",file,line,ptr);
+            return;
         }
         *(malloc_ptr + 1) = 0;
         base_free(malloc_ptr);
